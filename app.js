@@ -114,6 +114,15 @@ function deleteQuiz(id) {
   saveQuizzes(quizzes);
 }
 
+function renameQuiz(id, newTitle) {
+  const quizzes = loadQuizzes();
+  const quiz = quizzes.find(q => q.id === id);
+  if (quiz) {
+    quiz.title = newTitle;
+    saveQuizzes(quizzes);
+  }
+}
+
 function getQuiz(id) {
   return loadQuizzes().find(q => q.id === id);
 }
@@ -180,7 +189,7 @@ function renderHome() {
     card.innerHTML = `
       <div class="quiz-card-top">
         <div>
-          <div class="quiz-card-title">${escapeHtml(quiz.title)}</div>
+          <div class="quiz-card-title" data-title-for="${quiz.id}">${escapeHtml(quiz.title)}</div>
           <div class="quiz-card-meta">
             <span>Sheet ${String(i + 1).padStart(2, "0")}</span>
             <span>${quiz.questions.length} questions</span>
@@ -190,6 +199,7 @@ function renderHome() {
       </div>
       <div class="quiz-card-actions">
         <button class="btn btn-stamp" data-start="${quiz.id}">Start Inspection</button>
+        <button class="btn-delete" data-rename="${quiz.id}">Rename</button>
         <button class="btn-delete" data-delete="${quiz.id}">Remove</button>
       </div>
     `;
@@ -201,6 +211,9 @@ function renderHome() {
       location.hash = `#/quiz/${btn.dataset.start}`;
     });
   });
+  list.querySelectorAll("[data-rename]").forEach(btn => {
+    btn.addEventListener("click", () => startRename(btn.dataset.rename));
+  });
   list.querySelectorAll("[data-delete]").forEach(btn => {
     btn.addEventListener("click", () => {
       const quiz = getQuiz(btn.dataset.delete);
@@ -210,6 +223,41 @@ function renderHome() {
       }
     });
   });
+}
+
+function startRename(id) {
+  const titleEl = document.querySelector(`[data-title-for="${id}"]`);
+  if (!titleEl) return;
+  const quiz = getQuiz(id);
+  if (!quiz) return;
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = quiz.title;
+  input.className = "rename-input";
+  titleEl.replaceWith(input);
+  input.focus();
+  input.select();
+
+  let committed = false;
+  const commit = () => {
+    if (committed) return;
+    committed = true;
+    const newTitle = input.value.trim() || quiz.title;
+    renameQuiz(id, newTitle);
+    renderHome();
+  };
+  const cancel = () => {
+    if (committed) return;
+    committed = true;
+    renderHome();
+  };
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") commit();
+    if (e.key === "Escape") cancel();
+  });
+  input.addEventListener("blur", commit);
 }
 
 function escapeHtml(str) {
@@ -291,14 +339,14 @@ function renderAdd() {
 }
 
 /* ---------- Quiz view ---------- */
-let quizState = null; // { quiz, index, score, answered }
+let quizState = null; // { quiz, index, answers: [{selectedLabel, correct}|null, ...] }
 
 function renderQuiz(id) {
   const quiz = getQuiz(id);
   if (!quiz) { location.hash = "#/home"; return; }
 
   if (!quizState || quizState.quiz.id !== id) {
-    quizState = { quiz, index: 0, score: 0, answered: false };
+    quizState = { quiz, index: 0, answers: new Array(quiz.questions.length).fill(null) };
   }
 
   const tpl = document.getElementById("tpl-quiz");
@@ -306,7 +354,8 @@ function renderQuiz(id) {
   app.appendChild(tpl.content.cloneNode(true));
 
   document.querySelector("[data-confirm-exit]").addEventListener("click", e => {
-    if (quizState && !isLastQuestionAnswered() && quizState.index > 0) {
+    const hasUnfinishedProgress = quizState.answers.some(a => a) && quizState.answers.some(a => !a);
+    if (hasUnfinishedProgress) {
       if (!confirm("Exit this inspection? Your progress on this attempt won't be saved.")) {
         e.preventDefault();
       }
@@ -316,11 +365,10 @@ function renderQuiz(id) {
   renderQuestion();
 }
 
-function isLastQuestionAnswered() { return false; }
-
 function renderQuestion() {
-  const { quiz, index } = quizState;
+  const { quiz, index, answers } = quizState;
   const q = quiz.questions[index];
+  const existingAnswer = answers[index];
 
   document.getElementById("qIndex").textContent = "Q " + String(index + 1).padStart(2, "0");
   document.getElementById("qTotal").textContent = String(quiz.questions.length).padStart(2, "0");
@@ -331,41 +379,52 @@ function renderQuestion() {
   optionsList.innerHTML = "";
   const explainNote = document.getElementById("explainNote");
   explainNote.hidden = true;
-  document.getElementById("nextBtn").hidden = true;
 
   q.options.forEach(opt => {
     const btn = document.createElement("button");
     btn.className = "option";
     btn.type = "button";
     btn.innerHTML = `<span class="option-letter">${opt.label}</span><span class="option-text">${escapeHtml(opt.text)}</span>`;
-    btn.addEventListener("click", () => selectOption(opt, q));
+    if (!existingAnswer) {
+      btn.addEventListener("click", () => selectOption(opt, q));
+    }
     optionsList.appendChild(btn);
   });
 
-  quizState.answeredThis = false;
+  const prevBtn = document.getElementById("prevBtn");
+  prevBtn.hidden = index === 0;
+  prevBtn.onclick = () => {
+    quizState.index -= 1;
+    renderQuestion();
+  };
+
+  const nextBtn = document.getElementById("nextBtn");
+  if (existingAnswer) {
+    showAnswerState(q, existingAnswer.selectedLabel);
+  } else {
+    nextBtn.hidden = true;
+  }
 }
 
 function selectOption(selected, q) {
-  if (quizState.answeredThis) return;
-  quizState.answeredThis = true;
+  if (quizState.answers[quizState.index]) return;
+  quizState.answers[quizState.index] = { selectedLabel: selected.label, correct: !!selected.correct };
+  showAnswerState(q, selected.label);
+}
 
+function showAnswerState(q, selectedLabel) {
   const buttons = document.querySelectorAll(".option");
-  const options = q.options;
-
-  buttons.forEach((btn, i) => {
+  q.options.forEach((opt, i) => {
+    const btn = buttons[i];
     btn.disabled = true;
-    const opt = options[i];
     if (opt.correct) {
       btn.classList.add("correct");
-    } else if (opt === selected) {
+    } else if (opt.label === selectedLabel) {
       btn.classList.add("incorrect");
     } else {
       btn.classList.add("faded");
     }
   });
-
-  const wasCorrect = !!selected.correct;
-  if (wasCorrect) quizState.score += 1;
 
   const explainNote = document.getElementById("explainNote");
   const explainText = document.getElementById("explainText");
@@ -380,10 +439,10 @@ function selectOption(selected, q) {
     ? "See Results \u2192"
     : "Next Question \u2192";
   nextBtn.onclick = () => {
-    quizState.index += 1;
-    if (quizState.index >= quizState.quiz.questions.length) {
+    if (quizState.index + 1 >= quizState.quiz.questions.length) {
       location.hash = `#/result/${quizState.quiz.id}`;
     } else {
+      quizState.index += 1;
       renderQuestion();
     }
   };
@@ -399,7 +458,7 @@ function renderResult(id) {
   app.appendChild(tpl.content.cloneNode(true));
 
   const total = quiz.questions.length;
-  const score = quizState.score;
+  const score = quizState.answers.filter(a => a && a.correct).length;
   const pct = total ? Math.round((score / total) * 100) : 0;
   const pass = pct >= 60;
 
@@ -410,7 +469,7 @@ function renderResult(id) {
   document.getElementById("resultPct").textContent = `${pct}% correct`;
 
   document.getElementById("retakeBtn").addEventListener("click", () => {
-    quizState = { quiz, index: 0, score: 0, answered: false };
+    quizState = { quiz, index: 0, answers: new Array(quiz.questions.length).fill(null) };
     location.hash = `#/quiz/${quiz.id}`;
   });
 }
