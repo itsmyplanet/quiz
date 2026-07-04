@@ -1,0 +1,443 @@
+/* ============================================================
+   Site Register — MCQ Quiz Book
+   Pure vanilla JS, no build step. Data lives in localStorage.
+   ============================================================ */
+
+const STORAGE_KEY = "siteRegister.quizzes.v1";
+
+/* ---------- Parser ---------- */
+/**
+ * Parses the plain-text question bank format into:
+ * [{ question, options: [{label, text, correct}], explanation }]
+ */
+function parseQuizText(raw) {
+  const lines = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  const questions = [];
+  let current = null;
+  let mode = null; // 'question' | 'explanation'
+
+  const pushCurrent = () => {
+    if (current && current.options.length >= 2 && current.options.some(o => o.correct)) {
+      questions.push(current);
+    }
+    current = null;
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+
+    const qMatch = line.match(/^Q\s*\d+[.):]\s*(.*)$/i);
+    const optMatch = line.match(/^([A-Da-d])[.)]\s*(.*)$/);
+    const expMatch = line.match(/^Explanation\s*:\s*(.*)$/i);
+    const isSeparator = /^-{3,}$/.test(line) || /^=+$/.test(line);
+
+    if (qMatch) {
+      pushCurrent();
+      current = { question: qMatch[1].trim(), options: [], explanation: "" };
+      mode = "question";
+      continue;
+    }
+
+    if (optMatch && current && mode !== "explanation") {
+      const rest = optMatch[2];
+      // Strip everything from the checkmark onward so the answer isn't leaked
+      const cleanText = rest.split("✅")[0].trim();
+      const isCorrect = rest.includes("✅");
+      current.options.push({
+        label: optMatch[1].toUpperCase(),
+        text: cleanText || rest.trim(),
+        correct: isCorrect
+      });
+      mode = "option";
+      continue;
+    }
+
+    if (expMatch && current) {
+      current.explanation = expMatch[1].trim();
+      mode = "explanation";
+      continue;
+    }
+
+    if (isSeparator) {
+      mode = null;
+      continue;
+    }
+
+    if (line === "") continue;
+
+    // Continuation of the previous field
+    if (current) {
+      if (mode === "question") {
+        current.question += " " + line;
+      } else if (mode === "explanation") {
+        current.explanation += " " + line;
+      } else if (mode === "option" && current.options.length) {
+        const last = current.options[current.options.length - 1];
+        last.text += " " + line;
+      }
+    }
+  }
+  pushCurrent();
+  return questions;
+}
+
+/* ---------- Storage ---------- */
+function loadQuizzes() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) {
+    console.error("Failed to read quizzes from storage", e);
+    return [];
+  }
+}
+
+function saveQuizzes(quizzes) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(quizzes));
+}
+
+function addQuiz(title, questions) {
+  const quizzes = loadQuizzes();
+  const quiz = {
+    id: (crypto.randomUUID && crypto.randomUUID()) || String(Date.now()) + Math.random(),
+    title: title || "Untitled Sheet",
+    createdAt: new Date().toISOString(),
+    questions
+  };
+  quizzes.unshift(quiz);
+  saveQuizzes(quizzes);
+  return quiz;
+}
+
+function deleteQuiz(id) {
+  const quizzes = loadQuizzes().filter(q => q.id !== id);
+  saveQuizzes(quizzes);
+}
+
+function getQuiz(id) {
+  return loadQuizzes().find(q => q.id === id);
+}
+
+async function seedIfEmpty() {
+  const existing = loadQuizzes();
+  if (existing.length > 0) return;
+  try {
+    const res = await fetch("seed-quiz.txt");
+    if (!res.ok) return;
+    const text = await res.text();
+    const questions = parseQuizText(text);
+    if (questions.length) {
+      addQuiz("Construction Materials & Concrete Technology", questions);
+    }
+  } catch (e) {
+    // Offline on first load with no cache yet — fine, user can add their own.
+    console.warn("Could not load seed quiz", e);
+  }
+}
+
+/* ---------- Router ---------- */
+const app = document.getElementById("app");
+
+function router() {
+  const hash = location.hash || "#/home";
+  const [, , seg1, seg2] = hash.split("/"); // '#','','home' or '#','','quiz','id'
+
+  if (hash.startsWith("#/quiz/")) return renderQuiz(seg2);
+  if (hash.startsWith("#/result/")) return renderResult(seg2);
+  if (hash === "#/add") return renderAdd();
+  return renderHome();
+}
+
+window.addEventListener("hashchange", router);
+
+document.getElementById("addQuizBtn").addEventListener("click", () => {
+  location.hash = "#/add";
+});
+
+/* ---------- Home view ---------- */
+function renderHome() {
+  const tpl = document.getElementById("tpl-home");
+  app.innerHTML = "";
+  app.appendChild(tpl.content.cloneNode(true));
+
+  const quizzes = loadQuizzes();
+  document.getElementById("quizCount").textContent = String(quizzes.length).padStart(2, "0");
+
+  const list = document.getElementById("quizList");
+  const empty = document.getElementById("emptyState");
+
+  if (quizzes.length === 0) {
+    empty.hidden = false;
+    empty.querySelector("[data-action='add']").addEventListener("click", () => location.hash = "#/add");
+    return;
+  }
+
+  quizzes.forEach((quiz, i) => {
+    const card = document.createElement("article");
+    card.className = "quiz-card";
+    const date = new Date(quiz.createdAt);
+    const dateStr = isNaN(date) ? "" : date.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
+
+    card.innerHTML = `
+      <div class="quiz-card-top">
+        <div>
+          <div class="quiz-card-title">${escapeHtml(quiz.title)}</div>
+          <div class="quiz-card-meta">
+            <span>Sheet ${String(i + 1).padStart(2, "0")}</span>
+            <span>${quiz.questions.length} questions</span>
+            ${dateStr ? `<span>Logged ${dateStr}</span>` : ""}
+          </div>
+        </div>
+      </div>
+      <div class="quiz-card-actions">
+        <button class="btn btn-stamp" data-start="${quiz.id}">Start Inspection</button>
+        <button class="btn-delete" data-delete="${quiz.id}">Remove</button>
+      </div>
+    `;
+    list.appendChild(card);
+  });
+
+  list.querySelectorAll("[data-start]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      location.hash = `#/quiz/${btn.dataset.start}`;
+    });
+  });
+  list.querySelectorAll("[data-delete]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const quiz = getQuiz(btn.dataset.delete);
+      if (quiz && confirm(`Remove "${quiz.title}" from the register? This can't be undone.`)) {
+        deleteQuiz(btn.dataset.delete);
+        renderHome();
+      }
+    });
+  });
+}
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+/* ---------- Add view ---------- */
+function renderAdd() {
+  const tpl = document.getElementById("tpl-add");
+  app.innerHTML = "";
+  app.appendChild(tpl.content.cloneNode(true));
+
+  const titleInput = document.getElementById("titleInput");
+  const fileInput = document.getElementById("fileInput");
+  const fileDrop = document.getElementById("fileDrop");
+  const fileHint = document.getElementById("fileHint");
+  const preview = document.getElementById("parsePreview");
+  const errorBox = document.getElementById("parseError");
+  const saveBtn = document.getElementById("saveBtn");
+  const form = document.getElementById("addForm");
+
+  let parsedQuestions = null;
+  let fileName = "";
+
+  function handleFile(file) {
+    if (!file) return;
+    fileName = file.name;
+    fileHint.textContent = `Selected: ${file.name}`;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = String(reader.result || "");
+      const questions = parseQuizText(text);
+      preview.hidden = true;
+      errorBox.hidden = true;
+      if (questions.length === 0) {
+        parsedQuestions = null;
+        errorBox.hidden = false;
+        errorBox.textContent = "Couldn't find any questions in that file. Check it matches the format below (Q1., A)-D), a ✅ on the correct option, and an Explanation: line).";
+        saveBtn.disabled = true;
+        return;
+      }
+      parsedQuestions = questions;
+      preview.hidden = false;
+      preview.textContent = `Parsed ${questions.length} question${questions.length === 1 ? "" : "s"} successfully.`;
+      if (!titleInput.value.trim()) {
+        titleInput.value = fileName.replace(/\.txt$/i, "").replace(/[_-]+/g, " ").trim();
+      }
+      saveBtn.disabled = false;
+    };
+    reader.onerror = () => {
+      errorBox.hidden = false;
+      errorBox.textContent = "Couldn't read that file. Please try again.";
+    };
+    reader.readAsText(file);
+  }
+
+  fileInput.addEventListener("change", () => handleFile(fileInput.files[0]));
+
+  ["dragover", "dragenter"].forEach(evt =>
+    fileDrop.addEventListener(evt, e => { e.preventDefault(); fileDrop.classList.add("dragover"); })
+  );
+  ["dragleave", "drop"].forEach(evt =>
+    fileDrop.addEventListener(evt, e => { e.preventDefault(); fileDrop.classList.remove("dragover"); })
+  );
+  fileDrop.addEventListener("drop", e => {
+    const file = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (file) handleFile(file);
+  });
+
+  form.addEventListener("submit", e => {
+    e.preventDefault();
+    if (!parsedQuestions) return;
+    const title = titleInput.value.trim() || fileName.replace(/\.txt$/i, "") || "Untitled Sheet";
+    const quiz = addQuiz(title, parsedQuestions);
+    location.hash = `#/quiz/${quiz.id}`;
+  });
+}
+
+/* ---------- Quiz view ---------- */
+let quizState = null; // { quiz, index, score, answered }
+
+function renderQuiz(id) {
+  const quiz = getQuiz(id);
+  if (!quiz) { location.hash = "#/home"; return; }
+
+  if (!quizState || quizState.quiz.id !== id) {
+    quizState = { quiz, index: 0, score: 0, answered: false };
+  }
+
+  const tpl = document.getElementById("tpl-quiz");
+  app.innerHTML = "";
+  app.appendChild(tpl.content.cloneNode(true));
+
+  document.querySelector("[data-confirm-exit]").addEventListener("click", e => {
+    if (quizState && !isLastQuestionAnswered() && quizState.index > 0) {
+      if (!confirm("Exit this inspection? Your progress on this attempt won't be saved.")) {
+        e.preventDefault();
+      }
+    }
+  });
+
+  renderQuestion();
+}
+
+function isLastQuestionAnswered() { return false; }
+
+function renderQuestion() {
+  const { quiz, index } = quizState;
+  const q = quiz.questions[index];
+
+  document.getElementById("qIndex").textContent = "Q " + String(index + 1).padStart(2, "0");
+  document.getElementById("qTotal").textContent = String(quiz.questions.length).padStart(2, "0");
+  document.getElementById("progressFill").style.width = `${(index / quiz.questions.length) * 100}%`;
+  document.getElementById("questionText").textContent = q.question;
+
+  const optionsList = document.getElementById("optionsList");
+  optionsList.innerHTML = "";
+  const explainNote = document.getElementById("explainNote");
+  explainNote.hidden = true;
+  document.getElementById("nextBtn").hidden = true;
+
+  q.options.forEach(opt => {
+    const btn = document.createElement("button");
+    btn.className = "option";
+    btn.type = "button";
+    btn.innerHTML = `<span class="option-letter">${opt.label}</span><span class="option-text">${escapeHtml(opt.text)}</span>`;
+    btn.addEventListener("click", () => selectOption(opt, q));
+    optionsList.appendChild(btn);
+  });
+
+  quizState.answeredThis = false;
+}
+
+function selectOption(selected, q) {
+  if (quizState.answeredThis) return;
+  quizState.answeredThis = true;
+
+  const buttons = document.querySelectorAll(".option");
+  const options = q.options;
+
+  buttons.forEach((btn, i) => {
+    btn.disabled = true;
+    const opt = options[i];
+    if (opt.correct) {
+      btn.classList.add("correct");
+    } else if (opt === selected) {
+      btn.classList.add("incorrect");
+    } else {
+      btn.classList.add("faded");
+    }
+  });
+
+  const wasCorrect = !!selected.correct;
+  if (wasCorrect) quizState.score += 1;
+
+  const explainNote = document.getElementById("explainNote");
+  const explainText = document.getElementById("explainText");
+  if (q.explanation) {
+    explainText.textContent = q.explanation;
+    explainNote.hidden = false;
+  }
+
+  showStamp(wasCorrect);
+
+  const nextBtn = document.getElementById("nextBtn");
+  nextBtn.hidden = false;
+  nextBtn.textContent = quizState.index + 1 >= quizState.quiz.questions.length
+    ? "See Results \u2192"
+    : "Next Question \u2192";
+  nextBtn.onclick = () => {
+    quizState.index += 1;
+    if (quizState.index >= quizState.quiz.questions.length) {
+      location.hash = `#/result/${quizState.quiz.id}`;
+    } else {
+      renderQuestion();
+    }
+  };
+}
+
+function showStamp(correct) {
+  const overlay = document.getElementById("stampOverlay");
+  const stampEl = document.getElementById("stampEl");
+  stampEl.className = "stamp " + (correct ? "approved" : "rejected");
+  stampEl.textContent = correct ? "APPROVED" : "REJECTED";
+  overlay.hidden = false;
+  // restart animation
+  stampEl.style.animation = "none";
+  requestAnimationFrame(() => { stampEl.style.animation = ""; });
+  setTimeout(() => { overlay.hidden = true; }, 700);
+}
+
+/* ---------- Result view ---------- */
+function renderResult(id) {
+  const quiz = getQuiz(id);
+  if (!quiz || !quizState || quizState.quiz.id !== id) { location.hash = "#/home"; return; }
+
+  const tpl = document.getElementById("tpl-result");
+  app.innerHTML = "";
+  app.appendChild(tpl.content.cloneNode(true));
+
+  const total = quiz.questions.length;
+  const score = quizState.score;
+  const pct = total ? Math.round((score / total) * 100) : 0;
+  const pass = pct >= 60;
+
+  document.getElementById("resultStamp").textContent = pass ? "PASS" : "REVIEW";
+  document.getElementById("resultStamp").className = "result-stamp " + (pass ? "pass" : "fail");
+  document.getElementById("resultTitle").textContent = pass ? "Inspection Complete" : "Re-inspection Recommended";
+  document.getElementById("resultScore").textContent = `${score}/${total}`;
+  document.getElementById("resultPct").textContent = `${pct}% correct`;
+
+  document.getElementById("retakeBtn").addEventListener("click", () => {
+    quizState = { quiz, index: 0, score: 0, answered: false };
+    location.hash = `#/quiz/${quiz.id}`;
+  });
+}
+
+/* ---------- Boot ---------- */
+(async function init() {
+  await seedIfEmpty();
+  router();
+})();
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  });
+}
