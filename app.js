@@ -374,8 +374,6 @@ function selectOption(selected, q) {
     explainNote.hidden = false;
   }
 
-  showStamp(wasCorrect);
-
   const nextBtn = document.getElementById("nextBtn");
   nextBtn.hidden = false;
   nextBtn.textContent = quizState.index + 1 >= quizState.quiz.questions.length
@@ -389,18 +387,6 @@ function selectOption(selected, q) {
       renderQuestion();
     }
   };
-}
-
-function showStamp(correct) {
-  const overlay = document.getElementById("stampOverlay");
-  const stampEl = document.getElementById("stampEl");
-  stampEl.className = "stamp " + (correct ? "approved" : "rejected");
-  stampEl.textContent = correct ? "APPROVED" : "REJECTED";
-  overlay.hidden = false;
-  // restart animation
-  stampEl.style.animation = "none";
-  requestAnimationFrame(() => { stampEl.style.animation = ""; });
-  setTimeout(() => { overlay.hidden = true; }, 700);
 }
 
 /* ---------- Result view ---------- */
