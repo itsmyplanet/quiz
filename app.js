@@ -68,9 +68,9 @@ function parseQuizText(raw) {
     // Continuation of the previous field
     if (current) {
       if (mode === "question") {
-        current.question += " " + line;
+        current.question += "\n" + line;
       } else if (mode === "explanation") {
-        current.explanation += " " + line;
+        current.explanation += "\n" + line;
       } else if (mode === "option" && current.options.length) {
         const last = current.options[current.options.length - 1];
         last.text += " " + line;

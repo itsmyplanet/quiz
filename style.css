@@ -240,6 +240,7 @@ a{ color: inherit; text-decoration: none; }
 .question-text{
   font-family: var(--display); font-weight:600; font-size: 19px;
   line-height:1.4; margin: 0 0 18px;
+  white-space: pre-line;
 }
 .options{ display:flex; flex-direction:column; gap: 10px; }
 
@@ -283,7 +284,7 @@ a{ color: inherit; text-decoration: none; }
   font-family: var(--mono); font-size: 10.5px; letter-spacing:0.08em; text-transform:uppercase;
   color: var(--orange-dim); font-weight:600;
 }
-.explain-note p{ margin: 6px 0 0; font-size: 14px; line-height:1.5; }
+.explain-note p{ margin: 6px 0 0; font-size: 14px; line-height:1.5; white-space: pre-line; }
 
 @keyframes slideIn{ from{ opacity:0; transform: translateY(6px); } to{ opacity:1; transform:none; } }
 
